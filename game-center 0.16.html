@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Игровой центр v3.13</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  body { font-family: 'Inter', sans-serif; transition: background-image 0.5s; background-size: cover; background-position: center; background-attachment: fixed; }
+  .shake { animation: shake 0.6s; }
+  @keyframes shake { 0%,100% {transform: translateX(0);} 20%,60% {transform: translateX(-10px);} 40%,80% {transform: translateX(10px);} }
+  canvas { background:#111827; display:block; margin:auto; border-radius: 0.75rem; border: 1px solid #374151; cursor:pointer; width: 100%; height: auto; aspect-ratio: 600 / 500; }
+  .menu-btn { width: 100%; text-align: left; padding: 0.75rem 1rem; border-radius: 0.5rem; font-weight: 500; transition: background-color 0.2s, color 0.2s; background-color: #374151; color: #d1d5db; }
+  .menu-btn:hover { background-color: #4b5563; color: #f9fafb; }
+  .fullscreen-wrapper { position: relative; max-width: 600px; margin: auto; }
+  .fullscreen-wrapper:fullscreen canvas { max-width: none; height: 100vh; width: auto; }
+  .fullscreen-wrapper:fullscreen + .game-ui { display: none; }
+  .fullscreen-btn { position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; background-color: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); color: white; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background-color 0.2s; z-index: 10; }
+  .fullscreen-btn:hover { background-color: rgba(255, 255, 255, 0.2); }
+  .settings-grid { display: grid; grid-template-columns: 1fr 2fr; gap: 1rem; align-items: center; }
+  .settings-preview { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; background-color: #4b5563; }
+  .achievement-unlocked { animation: achievement-pop 4s forwards cubic-bezier(0.25, 0.1, 0.25, 1); }
+  @keyframes achievement-pop { 0% { bottom: -100px; opacity: 0; } 10%, 90% { bottom: 20px; opacity: 1; } 100% { bottom: -100px; opacity: 0; } }
+  .editor-tool.selected { background-color: #2563eb; color: white; }
+  .flex.gap-2.mt-2.items-center.script-editor {
+    display: grid;
+}
+</style>
+</head>
+<body id="main-body" class="bg-gray-900 text-gray-200">
+
+<aside class="fixed top-0 left-0 h-screen w-72 bg-gray-800 p-6 flex flex-col gap-6 border-r border-gray-700 shadow-lg overflow-y-auto">
+    <div>
+        <h1 class="text-2xl font-bold text-white mb-1">Игровой Центр</h1>
+        <p class="text-sm text-gray-400">Версия 3.13</p>
+    </div>
+    <hr class="border-gray-700">
+    <div>
+        <h2 class="text-lg font-semibold mb-3 px-1 text-gray-300">Меню</h2>
+        <div class="flex flex-col gap-2">
+            <button onclick="setMode('manual')" class="menu-btn">Камень-Ножницы</button>
+            <button onclick="showGlobalStats()" class="menu-btn">Статистика 🏆</button>
+            <button onclick="showSettings()" class="menu-btn">Настройки ⚙️</button>
+            <button onclick="startLevelEditor()" class="menu-btn">Редактор Уровней 🛠️</button>
+        </div>
+    </div>
+    <div>
+        <h2 class="text-lg font-semibold mb-3 px-1 text-gray-300">Игры</h2>
+        <div class="flex flex-col gap-2">
+            <button onclick="startSnake()" class="menu-btn">Змейка 🐍</button>
+            <button onclick="startBreakout()" class="menu-btn">Арканоид 🧱</button>
+            <button onclick="startPlatformer()" class="menu-btn">Платформер 🏃</button>
+            <button onclick="startPingPong()" class="menu-btn">Пинг-понг 🏓</button>
+            <button onclick="startMatch3()" class="menu-btn">3 в ряд ✨</button>
+        </div>
+    </div>
+</aside>
+
+<main class="ml-72 p-8">
+    <div class="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-md min-h-[600px]">
+        <div id="gameArea"></div>
+    </div>
+</main>
+
+<div id="achievement-popup" class="fixed left-1/2 -translate-x-1/2 -bottom-24 bg-green-500 text-white py-3 px-6 rounded-lg shadow-lg text-center z-50">
+    <div class="font-bold">🏆 Достижение открыто!</div>
+    <div id="achievement-title"></div>
+</div>
+
+
+<script>// ==================== Общие переменные и функции ====================
+let gameAnimationId=null;let isPaused=false;const customSprites={};let notification={message:'',timer:0};
+// ==================== Система Моддинга (Скриптов) ====================
+const gameMods = {
+    enemyBehaviors: {},
+    trapBehaviors: {}
+};
+function registerBehavior(type, name, behavior) {
+    if (typeof behavior.update !== 'function') {
+        console.error(`Ошибка: Поведение "${name}" должно иметь функцию 'update'.`);
+        return;
+    }
+    gameMods[type][name] = behavior;
+    console.log(`Зарегистрировано новое поведение "${name}" типа "${type}"`);
+}
+
+function clearPreviousGame(){if(gameAnimationId){cancelAnimationFrame(gameAnimationId);gameAnimationId=null}document.onkeydown=null;document.onkeyup=null;window.onblur=null;isPaused=false;notification.timer=0;const a=document.getElementById("gameArea"),b=a.cloneNode(false);a.parentNode.replaceChild(b,a)}
+function setupFullscreen(a){const b=document.getElementById(a),c=b.querySelector(".fullscreen-btn");if(!document.fullscreenEnabled){c.style.display="none";return}c.addEventListener("click",()=>{document.fullscreenElement?document.exitFullscreen():b.requestFullscreen()})}
+function setupPause(a,b){const c=document.onkeyup;document.onkeyup=d=>{if(c)c(d);if(d.key.toLowerCase()==='p')isPaused=!isPaused}}
+function showNotification(a,b=180){notification.message=a;notification.timer=b}
+function drawNotification(a,b){if(notification.timer>0){const c=Math.min(1,(180-notification.timer)/30,notification.timer/30);a.fillStyle=`rgba(17, 24, 39, ${0.8*c})`;a.fillRect(0,b.height/2-50,b.width,100);a.fillStyle=`rgba(255, 255, 255, ${c})`;a.font="24px Inter";a.textAlign="center";a.fillText(notification.message,b.width/2,b.height/2+8);notification.timer--}}
+function drawPauseScreen(a,b){a.fillStyle="rgba(17,24,39,0.7)";a.fillRect(0,0,b.width,b.height);a.fillStyle="white";a.font="50px Inter";a.textAlign="center";a.fillText("ПАУЗА",b.width/2,b.height/2)}
+function drawCanvasBackground(ctx, canvas) {
+    if (customSprites.background) {
+        ctx.drawImage(customSprites.background, 0, 0, canvas.width, canvas.height);
+    } else {
+        ctx.fillStyle = '#111827';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+}
+
+// ==================== Управление спрайтами и фоном ====================
+const SPRITE_KEYS={background:"Фон для Canvas",platformer_player:"Игрок",platformer_enemy_walk:"Враг (Ходит)",platformer_enemy_jumper:"Враг (Прыгун)",platformer_platform:"Платформа",platformer_trap:"Ловушка",platformer_portal:"Портал",arkanoid_brick1:"Кирпич (1)",arkanoid_brick2:"Кирпич (2)",arkanoid_ball:"Шар",arkanoid_paddle:"Платформа",snake_head:"Голова змейки",snake_body:"Тело змейки",snake_food:"Еда",match3_gem0:"Кристалл 1",match3_gem1:"Кристалл 2",match3_gem2:"Кристалл 3",match3_gem3:"Кристалл 4",match3_gem4:"Кристалл 5",match3_gem5:"Кристалл 6",};
+function loadAssets(){Object.keys(SPRITE_KEYS).forEach(a=>{const b=localStorage.getItem(`sprite_${a}`);if(b){const c=new Image();c.src=b;customSprites[a]=c}});const d=localStorage.getItem('custom_background_body');if(d)document.getElementById('main-body').style.backgroundImage=`url(${d})`}
+function handleImageUpload(event,key,previewId){const file=event.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=e=>{const base64=e.target.result;localStorage.setItem(`sprite_${key}`,base64);const img=new Image();img.src=base64;customSprites[key]=img;document.getElementById(previewId).src=base64};reader.readAsDataURL(file)}
+function handleBackgroundUpload(event, type){const file=event.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=e=>{const base64=e.target.result;if(type==='body'){localStorage.setItem('custom_background_body',base64);document.getElementById('main-body').style.backgroundImage=`url(${base64})`}else{localStorage.setItem('sprite_background',base64);const img=new Image();img.src=base64;customSprites.background=img}};reader.readAsDataURL(file)}
+function resetSprites(prefix){Object.keys(SPRITE_KEYS).filter(k=>k.startsWith(prefix)).forEach(key=>{localStorage.removeItem(`sprite_${key}`);delete customSprites[key]});showSettings()}
+function resetBackground(type){if(type==='body'){localStorage.removeItem('custom_background_body');document.getElementById('main-body').style.backgroundImage=''}else{localStorage.removeItem('sprite_background');delete customSprites.background}}
+function showSettings(){clearPreviousGame();const a=document.getElementById("gameArea");let b=`<h1 class="text-3xl font-bold mb-6">Настройки</h1>`;b+=`<div class="mb-8 p-4 border border-gray-700 rounded-lg"><h2 class="text-2xl font-semibold mb-4">Общие</h2><div class="settings-grid mb-2"><label class="font-medium text-gray-300">Фон страницы</label><div class="flex items-center gap-4"><input type="file" accept="image/*" onchange="handleBackgroundUpload(event, 'body')" class="text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700"></div></div><div class="settings-grid"><label class="font-medium text-gray-300">Фон игр (Canvas)</label><div class="flex items-center gap-4"><input type="file" accept="image/*" onchange="handleBackgroundUpload(event, 'canvas')" class="text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700"></div></div><button onclick="resetBackground('body')" class="mt-4 mr-2 bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg text-sm">Сбросить фон страницы</button><button onclick="resetBackground('canvas')" class="mt-4 bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg text-sm">Сбросить фон игр</button></div>`;const c={Платформер:"platformer",Арканоид:"arkanoid",Змейка:"snake","3 в ряд":"match3"};for(const d in c){const e=c[d];b+=`<div class="mb-8 p-4 border border-gray-700 rounded-lg"><div class="flex justify-between items-center mb-4"><h2 class="text-2xl font-semibold">${d}</h2><button onclick="resetSprites('${e}')" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg text-sm">Сбросить</button></div>`;Object.keys(SPRITE_KEYS).filter(f=>f.startsWith(e)).forEach(f=>{const g=SPRITE_KEYS[f],h=`preview_${f}`;b+=`<div class="settings-grid mb-2"><label class="font-medium text-gray-300">${g}</label><div class="flex items-center gap-4"><img id="${h}" src="${customSprites[f]?.src||'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='}" class="settings-preview"><input type="file" accept="image/*" onchange="handleImageUpload(event, '${f}', '${h}')" class="text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700"></div></div>`});b+=`</div>`}a.innerHTML=b}
+
+// ==================== Статистика и Достижения ====================
+const achievements={'rps_first_win':{title:"Первые шаги",desc:"Выиграть 1 раз в Камень-Ножницы."},'rps_spock_win':{title:"Nerd logic",desc:"Победить, используя Спока."},'snake_score_5':{title:"Начинающий гурман",desc:"Набрать 5 очков в Змейке."},'snake_score_15':{title:"Профессиональный обжора",desc:"Набрать 15 очков в Змейке."},'breakout_win':{title:"Разрушитель стен",desc:"Пройти все уровни Арканоида."},'breakout_powerup':{title:"Повер-ап!",desc:"Поймать свой первый бонус в Арканоиде."},'platformer_win':{title:"Покоритель платформ",desc:"Пройти все уровни Платформера."},'platformer_no_damage':{title:"Неприкасаемый",desc:"Пройти любой уровень Платформера, не теряя жизней."},'platformer_timed_win':{title:"Спринтер",desc:"Пройти Платформер в режиме 'На время'."},'pong_win':{title:"Чемпион Понга",desc:"Победить компьютер в Пинг-понг."},'pong_flawless':{title:"Сухая победа",desc:"Победить в Пинг-понг со счетом 5-0."},'match3_level_5':{title:"Мастер комбинаций",desc:"Дойти до 5 уровня в '3 в ряд'."},'match3_bomb':{title:"Большой бада-бум",desc:"Создать и взорвать свою первую бомбу в '3 в ряд'."},'match3_laser':{title:"Лучи добра",desc:"Создать и активировать лазер в '3 в ряд'."},'played_all':{title:"Мастер на все руки",desc:"Сыграть в каждую игру хотя бы один раз."}};
+function getGlobalStats(){const a=localStorage.getItem('globalStats');return a?JSON.parse(a):{totalPlayTime:0,wins:0,losses:0,unlockedAchievements:{},gamesPlayed:{}}}
+function updateGlobalStats(a,b){const c=getGlobalStats();if(typeof c[a]==='number')c[a]+=b;else c[a]=b;localStorage.setItem('globalStats',JSON.stringify(c));const d=Object.keys(c.gamesPlayed).length;if(d>=5)unlockAchievement('played_all');return c}
+function unlockAchievement(a){const b=getGlobalStats();if(!b.unlockedAchievements[a]){b.unlockedAchievements[a]=true;updateGlobalStats('unlockedAchievements',b.unlockedAchievements);const c=document.getElementById('achievement-popup'),d=document.getElementById('achievement-title');d.textContent=achievements[a].title;c.classList.add('achievement-unlocked');setTimeout(()=>c.classList.remove('achievement-unlocked'),4000)}}
+function showGlobalStats(){clearPreviousGame();const a=document.getElementById("gameArea"),b=getGlobalStats();let c=`<h1 class="text-3xl font-bold mb-6">Общая статистика и Достижения</h1><div class="grid grid-cols-3 gap-4 mb-8 text-center"><div class="bg-gray-700 p-4 rounded-lg"><div class="text-sm text-gray-400">Побед</div><div class="text-2xl font-bold">${b.wins}</div></div><div class="bg-gray-700 p-4 rounded-lg"><div class="text-sm text-gray-400">Поражений</div><div class="text-2xl font-bold">${b.losses}</div></div><div class="bg-gray-700 p-4 rounded-lg"><div class="text-sm text-gray-400">Время в игре</div><div class="text-2xl font-bold">${(b.totalPlayTime/60).toFixed(1)} мин.</div></div></div><h2 class="text-2xl font-semibold mb-4">Достижения (${Object.keys(b.unlockedAchievements).length}/${Object.keys(achievements).length})</h2><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">`;for(const d in achievements){const e=b.unlockedAchievements[d];c+=`<div class="p-4 rounded-lg border ${e?'border-green-500 bg-green-500/10':'border-gray-700 bg-gray-700/50'}"><h3 class="font-bold text-lg ${e?'text-green-400':'text-white'}">${e?'🏆 ':''} ${achievements[d].title}</h3><p class="text-sm ${e?'text-gray-300':'text-gray-400'}">${achievements[d].desc}</p></div>`}c+=`</div>`;a.innerHTML=c}
+let gameStartTime=0;function startGameTimer(){gameStartTime=Date.now()}function stopGameTimer(){if(gameStartTime>0){const a=(Date.now()-gameStartTime)/1000;updateGlobalStats('totalPlayTime',a);gameStartTime=0}}
+
+// ==================== Камень-ножницы ====================
+const moves=["rock","paper","scissors","lizard","spock"],icons={rock:"🪨",paper:"📄",scissors:"✂️",lizard:"🦎",spock:"🖖"},rules={rock:["scissors","lizard"],paper:["rock","spock"],scissors:["paper","lizard"],lizard:["spock","paper"],spock:["scissors","rock"]};let playerScore=0,compScore=0,roundHistory=[],mode='manual';let rpsWins=0;function setMode(a){if(a==='manual'||a==='random'){const b=getGlobalStats();b.gamesPlayed.rps=true;updateGlobalStats('gamesPlayed',b.gamesPlayed)}clearPreviousGame();playerScore=0;compScore=0;roundHistory=[];document.getElementById("gameArea").innerHTML=`<div id="choices" class="mb-4 flex justify-center gap-3"></div><div class="flex justify-center mb-4"><div id="playerChoice" class="text-6xl mx-8">❓</div><div id="compChoice" class="text-6xl mx-8">❓</div></div><div id="result" class="text-2xl font-bold text-center mb-4 min-h-[32px]"></div><div id="score" class="text-lg text-center mb-6 min-h-[28px]"></div><h2 class="text-xl font-semibold mb-2 text-center">История ходов</h2><div class="overflow-y-auto max-h-60"><table class="min-w-full text-center"><thead class="bg-gray-700 sticky top-0"><tr><th class="py-2 px-4 font-medium text-gray-300">Раунд</th><th class="py-2 px-4 font-medium text-gray-300">Игрок</th><th class="py-2 px-4 font-medium text-gray-300">Компьютер</th><th class="py-2 px-4 font-medium text-gray-300">Результат</th></tr></thead><tbody id="history" class="divide-y divide-gray-700"></tbody></table></div>`;mode=a;const c=document.getElementById("choices");c.innerHTML="";if(mode==='manual')moves.forEach(d=>{const e=document.createElement('button');e.className='mx-2 py-2 px-4 bg-gray-600 hover:bg-gray-500 rounded-lg text-2xl transition';e.innerHTML=icons[d];e.onclick=()=>playManual(d);c.appendChild(e)});else{const d=document.createElement('button');d.className='py-2 px-4 bg-blue-600 text-white hover:bg-blue-700 transform transition rounded-lg text-2xl';d.innerHTML='🎰 Играть';d.onclick=()=>playRandom();c.appendChild(d)}};function playManual(a){const b=document.getElementById("playerChoice"),c=document.getElementById("compChoice"),d=document.getElementById("result");b.innerHTML=icons[a];b.classList.add("shake");c.innerHTML='❓';d.innerHTML='...';const e=moves[Math.floor(Math.random()*moves.length)];setTimeout(()=>{b.classList.remove("shake");c.innerHTML=icons[e];let f="";if(a===e){f="Ничья!"}else if(rules[a].includes(e)){f="Вы выиграли!";playerScore++;rpsWins++;if(a==='spock')unlockAchievement('rps_spock_win')}else{f="Компьютер выиграл!";compScore++}if(rpsWins>=1)unlockAchievement('rps_first_win');d.innerHTML=f;document.getElementById("score").innerHTML=`Игрок: ${playerScore} | Компьютер: ${compScore}`;addHistory(a,e,f)},600)}function playRandom(){const a=document.getElementById("playerChoice"),b=document.getElementById("compChoice"),c=document.getElementById("result");let d=0;const e=setInterval(()=>{a.innerHTML=icons[moves[d]];d=(d+1)%moves.length},100),f=moves[Math.floor(Math.random()*moves.length)];setTimeout(()=>{clearInterval(e);const g=moves[Math.floor(Math.random()*moves.length)];a.innerHTML=icons[g];b.innerHTML=icons[f];let h="";if(g===f){h="Ничья!"}else if(rules[g].includes(f)){h="Вы выиграли!";playerScore++;rpsWins++;if(g==='spock')unlockAchievement('rps_spock_win')}else{h="Компьютер выиграл!";compScore++}if(rpsWins>=1)unlockAchievement('rps_first_win');c.innerHTML=h;document.getElementById("score").innerHTML=`Игрок: ${playerScore} | Компьютер: ${compScore}`;addHistory(g,f,h)},1500)}function addHistory(a,b,c){roundHistory.unshift({round:roundHistory.length+1,player:icons[a],computer:icons[b],result:c});const d=document.getElementById("history");d.innerHTML="";roundHistory.forEach(e=>{const f=document.createElement('tr');f.innerHTML=`<td class="py-2 px-4">${e.round}</td><td class="py-2 px-4">${e.player}</td><td class="py-2 px-4">${e.computer}</td><td class="py-2 px-4">${e.result}</td>`;d.appendChild(f)})}
+
+// ==================== Змейка ====================
+function startSnake(){const a=getGlobalStats();a.gamesPlayed.snake=true;updateGlobalStats('gamesPlayed',a.gamesPlayed);clearPreviousGame();startGameTimer();const b=document.getElementById("gameArea");b.innerHTML=`<div id="game-wrapper" class="fullscreen-wrapper"><canvas id="snakeCanvas" width="600" height="500" style="cursor:auto;"></canvas><button class="fullscreen-btn" title="На весь экран">⛶</button></div><div class="game-ui text-center mt-4 text-xl font-semibold" id="snakeScore">Очки: 0</div>`;setupFullscreen('game-wrapper');const c=document.getElementById('snakeCanvas'),d=c.getContext('2d'),e=20;let f=[{x:10*e,y:10*e}],g={x:Math.floor(Math.random()*30)*e,y:Math.floor(Math.random()*25)*e};let h=0,i=0,j=0;let k=120,l=0;document.onkeydown=(m=>{if(m.key==='ArrowUp'&&i===0){h=0;i=-e}if(m.key==='ArrowDown'&&i===0){h=0;i=e}if(m.key==='ArrowLeft'&&h===0){h=-e;i=0}if(m.key==='ArrowRight'&&h===0){h=e;i=0}});function n(o){gameAnimationId=requestAnimationFrame(n);if(o-l<k){return}l=o;drawCanvasBackground(d,c);f.forEach((p,q)=>{if(q===0){if(customSprites.snake_head)d.drawImage(customSprites.snake_head,p.x,p.y,e,e);else{d.fillStyle='#4ade80';d.fillRect(p.x,p.y,e,e)}}else{if(customSprites.snake_body)d.drawImage(customSprites.snake_body,p.x,p.y,e,e);else{d.fillStyle='#16a34a';d.fillRect(p.x,p.y,e,e)}}});if(customSprites.snake_food)d.drawImage(customSprites.snake_food,g.x,g.y,e,e);else{d.fillStyle='#f87171';d.fillRect(g.x,g.y,e,e)}let r={x:f[0].x+h,y:f[0].y+i};if(r.x===g.x&&r.y===g.y){j++;k=Math.max(35,k*0.95);g={x:Math.floor(Math.random()*30)*e,y:Math.floor(Math.random()*25)*e}}else f.pop();f.unshift(r);if(r.x<0||r.y<0||r.x>=c.width||r.y>=c.height||f.slice(1).some(s=>s.x===r.x&&s.y===r.y)){cancelAnimationFrame(gameAnimationId);stopGameTimer();updateGlobalStats('losses',1);if(j>=5)unlockAchievement('snake_score_5');if(j>=15)unlockAchievement('snake_score_15');showNotification(`Игра окончена! Ваши очки: ${j}`);return}document.getElementById('snakeScore').innerText=`Очки: ${j}`;if(document.fullscreenElement){d.fillStyle="white";d.font="20px Inter";d.textAlign="center";d.fillText(`Очки: ${j}`,c.width/2,30)}drawNotification(d,c)}gameAnimationId=requestAnimationFrame(n)}
+
+// ==================== Арканоид ====================
+function generateBreakoutLevel(a){const b=[];const c=5+(a>3?2:0),d=8;for(let e=0;e<c;e++){const f=[];for(let g=0;g<d/2;g++){let h=0;if(Math.random()>0.3)h=Math.random()>0.7-a*0.1?2:1;f.push(h)}b.push([...f,...f.slice().reverse()])}return b}
+function startBreakout(){const a=getGlobalStats();a.gamesPlayed.breakout=true;updateGlobalStats('gamesPlayed',a.gamesPlayed);clearPreviousGame();startGameTimer();const b=document.getElementById("gameArea");b.innerHTML=`<div id="game-wrapper" class="fullscreen-wrapper"><canvas id="breakoutCanvas" width="600" height="500"></canvas><button class="fullscreen-btn" title="На весь экран">⛶</button></div><div class="game-ui flex justify-between items-center mt-4 px-4 text-xl font-semibold"><div id="breakoutScore">Очки: 0</div><div id="breakoutLevel">Уровень: 1</div><div id="breakoutLives"></div></div><div class="game-ui text-center text-sm mt-2 text-gray-400">Управление: Мышь. Пауза: 'P'</div><div id="statsContainer" class="mt-6"></div>`;setupFullscreen('game-wrapper');const c=document.getElementById('breakoutCanvas'),d=c.getContext('2d');setupPause(c,d);const e=100;let f=10,g=e;let h=(c.width-g)/2;let i=[],j=[],k=[];let l=0,m=3,n=0;const o='arkanoidGameStats';let p=Date.now(),r={date:(new Date).toLocaleString(),finalScore:0,totalTime:0,result:"Поражение"};let s=1;function t(){const B=localStorage.getItem(o);return B?JSON.parse(B):[]}function u(B){let C=t();C.unshift(B);if(C.length>10)C=C.slice(0,10);localStorage.setItem(o,JSON.stringify(C))}
+function v(){const B=document.getElementById('statsContainer'),C=t();if(C.length===0){B.innerHTML='<h2 class="text-xl font-semibold mb-2 text-center">История игр пуста</h2>';return}let E=`<h2 class="text-xl font-semibold mb-2 text-center">История игр</h2><table class="min-w-full text-center"><thead class="bg-gray-700"><tr><th class="py-2 px-4 font-medium text-gray-300">Дата</th><th class="py-2 px-4 font-medium text-gray-300">Результат</th><th class="py-2 px-4 font-medium text-gray-300">Счет</th><th class="py-2 px-4 font-medium text-gray-300">Время</th></tr></thead><tbody class="divide-y divide-gray-700">`;C.forEach(F=>{E+=`<tr><td class="py-2 px-4">${F.date}</td><td class="py-2 px-4">${F.result}</td><td class="py-2 px-4">${F.finalScore}</td><td class="py-2 px-4">${F.totalTime.toFixed(2)} с.</td></tr>`});E+=`</tbody></table>`;B.innerHTML=E}
+function A(){const B=3;return{x:c.width/2,y:c.height-30,dx:B*s,dy:-B*s,radius:10}}function C(B){j=[];k=[];s=1+B*0.1;const D=generateBreakoutLevel(B),E=60,F=20,G=10,H=40,I=30;D.forEach((J,K)=>{J.forEach((L,M)=>{if(L>0)j.push({x:M*(E+G)+I,y:K*(F+G)+H,w:E,h:F,health:L,status:1})})});if(document.getElementById('breakoutLevel'))document.getElementById('breakoutLevel').innerText=`Уровень: ${B+1}`;i=[A()];h=(c.width-g)/2}C(n);v();c.addEventListener('mousemove',B=>{const D=c.getBoundingClientRect();h=B.clientX-D.left-g/2;if(h<0)h=0;if(h+g>c.width)h=c.width-g});function z(B){r.finalScore=l;r.totalTime=(Date.now()-p)/1000;r.result=B?"Победа":"Поражение";u(r);v();stopGameTimer();if(B){updateGlobalStats('wins',1);unlockAchievement('breakout_win')}else{updateGlobalStats('losses',1)}showNotification(`${B?'ПОБЕДА!':'Игра окончена!'} Ваши очки: ${l}`);gameAnimationId=null}
+function E(B,F,G,H){d.fillStyle="white";d.font="20px Inter";d.textAlign="left";d.fillText(`Очки: ${B}`,15,30);d.textAlign="center";d.fillText(`Уровень: ${H+1}`,c.width/2,30);d.textAlign="right";d.fillText("❤️".repeat(G),c.width-15,30)}
+function D(){if(gameAnimationId===null)return;if(isPaused){drawPauseScreen(d,c);gameAnimationId=requestAnimationFrame(D);return}drawCanvasBackground(d,c);if(document.getElementById('breakoutScore'))document.getElementById('breakoutScore').innerText=`Очки: ${l}`;if(document.getElementById('breakoutLives'))document.getElementById('breakoutLives').innerText='❤️'.repeat(m);j.forEach(B=>{if(B.status===1){const F=B.health>1?customSprites.arkanoid_brick2:customSprites.arkanoid_brick1;if(F)d.drawImage(F,B.x,B.y,B.w,B.h);else{d.fillStyle=B.health>1?'#9ca3af':'#fb923c';d.fillRect(B.x,B.y,B.w,B.h)}}});k.forEach(B=>{d.fillStyle=B.type==='multi-ball'?'#67e8f9':'#86efac';d.fillRect(B.x,B.y,B.w,B.h)});i.forEach((B,F)=>{if(customSprites.arkanoid_ball)d.drawImage(customSprites.arkanoid_ball,B.x-B.radius,B.y-B.radius,B.radius*2,B.radius*2);else{d.beginPath();d.arc(B.x,B.y,B.radius,0,Math.PI*2);d.fillStyle='#ef4444';d.fill();d.closePath()}B.x+=B.dx;B.y+=B.dy;if(B.x+B.dx>c.width-B.radius||B.x+B.dx<B.radius)B.dx=-B.dx;if(B.y+B.dy<B.radius)B.dy=-B.dy;else if(B.y+B.dy>c.height-B.radius){if(B.x>h&&B.x<h+g)B.dy=-B.dy;else i.splice(F,1)}});if(customSprites.arkanoid_paddle)d.drawImage(customSprites.arkanoid_paddle,h,c.height-f,g,f);else{d.fillStyle='#4ade80';d.fillRect(h,c.height-f,g,f)}k.forEach((B,F)=>{B.y+=B.dy;if(B.x<h+g&&B.x+B.w>h&&B.y<c.height&&B.y+B.h>c.height-f){unlockAchievement('breakout_powerup');if(B.type==='multi-ball')i.push(A());else if(B.type==='enlarge-paddle'){g=e*1.5;setTimeout(()=>g=e,8000)}k.splice(F,1)}if(B.y>c.height)k.splice(F,1)});i.forEach(B=>{j.forEach(F=>{if(F.status===1&&B.x>F.x&&B.x<F.x+F.w&&B.y>F.y&&B.y<F.y+F.h){B.dy=-B.dy;F.health--;l+=10;if(F.health<=0){F.status=0;if(Math.random()<0.2){const G=Math.random()>0.5?'multi-ball':'enlarge-paddle';k.push({x:F.x+F.w/2,y:F.y,w:15,h:15,dy:2,type:G})}}}})});if(i.length===0){m--;if(m<=0){z(false);return}else{i.push(A());h=(c.width-g)/2}}const G=j.filter(B=>B.status===1).length;if(G===0){n++;if(n>=5){z(true);return}else{showNotification(`Уровень ${n+1} пройден!`);C(n)}}if(document.fullscreenElement)E(l,m,m,n);drawNotification(d,c);gameAnimationId=requestAnimationFrame(D)}gameAnimationId=requestAnimationFrame(D)}
+
+// ==================== Платформер: Данные Уровней ====================
+const platformerLevels=[{platforms:[{x:0,y:450,w:600,h:50}],enemies:[{x:400,y:420,w:30,h:30,dx:2,health:1,ai:"walk"}]},{platforms:[{x:0,y:450,w:600,h:50},{x:150,y:350,w:100,h:10},{x:300,y:250,w:100,h:10}],enemies:[{x:400,y:400,w:30,h:30,dx:2,health:1,ai:"walk"},{x:250,y:420,w:30,h:30,dx:-2,health:1,ai:"jumper",jumpCooldown:100}]},{platforms:[{x:0,y:450,w:250,h:20},{x:350,y:450,w:250,h:20},{x:200,y:300,w:200,h:10}],enemies:[{x:400,y:270,w:30,h:30,dx:2,health:2,ai:"walk"}]},{platforms:[{x:0,y:450,w:600,h:50},{x:100,y:350,w:150,h:10},{x:350,y:350,w:150,h:10},{x:225,y:200,w:150,h:10},{x:50,y:270,w:100,h:10}],enemies:[{x:200,y:420,w:30,h:30,dx:2,health:1,ai:"jumper",jumpCooldown:120},{x:400,y:320,w:30,h:30,dx:-2,health:1,ai:"jumper",jumpCooldown:150}]},{platforms:[{x:0,y:450,w:100,h:50},{x:150,y:400,w:100,h:100},{x:300,y:350,w:100,h:150},{x:450,y:300,w:100,h:200}],enemies:[{x:400,y:320,w:30,h:30,dx:-2,health:1,ai:"jumper",jumpCooldown:150}],traps:[{x:200,y:385,w:40,h:40,movementRange:50},{x:450,y:285,w:100,h:15,movementRange:0}]},{platforms:[{x:0,y:450,w:600,h:50},{x:0,y:250,w:200,h:10},{x:400,y:250,w:200,h:10}],portals:[{x:550,y:200,w:15,h:50,target:{x:50,y:400}},{x:50,y:400,w:15,h:50,target:{x:500,y:200}}],enemies:[{x:350,y:220,w:30,h:30,dx:-2,health:1,ai:"walk"},{x:150,y:220,w:30,h:30,dx:-2,health:1,ai:"jumper",jumpCooldown:50}]},{platforms:[{x:0,y:480,w:600,h:20},{x:100,y:400,w:80,h:10},{x:250,y:320,w:80,h:10},{x:400,y:240,w:80,h:10},{x:250,y:160,w:80,h:10}],enemies:[{x:110,y:370,w:30,h:30,dx:2,health:1,ai:"walk"},{x:410,y:210,w:30,h:30,dx:2,health:1,ai:"walk"}]},{platforms:[{x:250,y:480,w:100,h:20},{x:450,y:400,w:100,h:10},{x:250,y:320,w:100,h:10},{x:50,y:240,w:100,h:10},{x:250,y:160,w:100,h:10}],enemies:[{x:260,y:290,w:30,h:30,dx:2,health:2,ai:"walk"}],traps:[{x:0,y:50,w:600,h:15,movementRange:0}]},{platforms:[{x:0,y:450,w:600,h:50}],enemies:[{x:100,y:420,w:30,h:30,dx:3,health:1,ai:"jumper",jumpCooldown:80},{x:500,y:420,w:30,h:30,dx:-3,health:1,ai:"jumper",jumpCooldown:100},{x:300,y:420,w:30,h:30,dx:2,health:2,ai:"walk"}],traps:[{x:250,y:300,w:100,h:100,movementRange:150}]},{platforms:[{x:0,y:450,w:600,h:50},{x:0,y:300,w:150,h:10},{x:450,y:300,w:150,h:10}],enemies:[{x:50,y:270,w:30,h:30,dx:3,health:2,ai:"walk"},{x:500,y:270,w:30,h:30,dx:-3,health:2,ai:"walk"},{x:285,y:420,w:30,h:30,dx:-3,health:1,ai:"jumper",jumpCooldown:60}],portals:[{x:20,y:250,w:15,h:50,target:{x:565,y:250}}],traps:[{x:250,y:380,w:100,h:15,movementRange:0}]}];
+let customLevels = JSON.parse(localStorage.getItem('customPlatformerLevels')) || [];
+
+
+// ==================== Платформер: Классы ====================
+class Player{constructor(){this.x=50;this.y=350;this.width=30;this.height=30;this.dx=0;this.dy=0;this.lives=3;this.score=0;this.isGrounded=false;this.accel=0.5;this.friction=0.9;this.maxSpeed=6;this.lastHit=0;this.hitCooldown=60;this.initialLives=3}reset(pos){this.x=pos?pos.x:50;this.y=pos?pos.y:350;this.dx=0;this.dy=0;this.lastHit=this.hitCooldown}update(a,b,c){if(a.ArrowLeft)this.dx-=this.accel;else if(a.ArrowRight)this.dx+=this.accel;this.dx*=this.friction;if(Math.abs(this.dx)>this.maxSpeed)this.dx=this.maxSpeed*Math.sign(this.dx);if(a.ArrowUp&&this.isGrounded){this.dy=-14;this.isGrounded=false}this.dy+=b;this.x+=this.dx;this.y+=this.dy;this.isGrounded=false;c.forEach(d=>{if(this.x<d.x+d.w&&this.x+this.width>d.x&&this.y+this.height>d.y&&this.y<d.y+d.h){if(this.dy>0){this.dy=0;this.y=d.y-this.height;this.isGrounded=true}}});if(this.lastHit>0)this.lastHit--}draw(a){if(customSprites.platformer_player){a.drawImage(customSprites.platformer_player,this.x,this.y,this.width,this.height)}else{a.fillStyle=this.lastHit>0?"#86efac":"#4ade80";a.fillRect(this.x,this.y,this.width,this.height)}}}
+class Enemy{constructor(a){Object.assign(this,a);this.dy=0;this.lastHit=0;this.hitCooldown=30;const behavior = gameMods.enemyBehaviors[this.scriptName];if(behavior&&typeof behavior.initialize==='function'){behavior.initialize(this)}}
+    update(gravity,platforms,player,ctx){
+        // ИСПОЛЬЗОВАНИЕ КАСТОМНОГО СКРИПТА
+        const behavior=gameMods.enemyBehaviors[this.scriptName];
+        if(behavior && typeof behavior.update === 'function'){
+            behavior.update(this, player, platforms, gravity, ctx);
+        } else { // Стандартное поведение
+            this.x+=this.dx;let onEdge=true;for(const p of platforms){if(this.y+this.h===p.y&&(this.x>p.x&&this.x+this.w<p.x+p.w)){onEdge=false;break}}if(onEdge)this.dx*=-1;
+            if(this.ai==="jumper"){
+                let onGround=false;platforms.forEach(p=>{if(this.y+this.h>=p.y&&this.y+this.h<=p.y+10&&this.x+this.w>p.x&&this.x<p.x+p.w)onGround=true});this.jumpCooldown--;if(onGround&&this.jumpCooldown<=0){this.dy=-12;this.jumpCooldown=Math.random()*100+100}
+            }
+        }
+        this.dy+=gravity;this.y+=this.dy;platforms.forEach(p=>{if(this.x<p.x+p.w&&this.x+this.w>p.x&&this.y+this.h>=p.y&&this.y+this.h<=p.y+this.dy+1){if(this.dy>0){this.y=p.y-this.h;this.dy=0}}});if(this.lastHit>0)this.lastHit--
+    }
+    draw(a){const b=this.ai==='jumper'?customSprites.platformer_enemy_jumper:customSprites.platformer_enemy_walk;if(b)a.drawImage(b,this.x,this.y,this.w,this.h);else{a.fillStyle=this.lastHit>0?"#d1d5db":this.health>1?"#f472b6":"#f87171";a.fillRect(this.x,this.y,this.w,this.h)}}}
+class Trap{constructor(a){Object.assign(this,a);const behavior=gameMods.trapBehaviors[this.scriptName];if(behavior&&typeof behavior.initialize === 'function'){behavior.initialize(this)}}
+    update(player,ctx){
+        // ИСПОЛЬЗОВАНИЕ КАСТОМНОГО СКРИПТА
+        const behavior=gameMods.trapBehaviors[this.scriptName];
+        if(behavior && typeof behavior.update === 'function'){
+            behavior.update(this, player, ctx);
+        } else { // Стандартное поведение
+            this.angle=(this.angle||0)+0.05;if(this.movementRange>0){this.x=(this.initialX||this.x)+Math.sin(Date.now()/500)*this.movementRange}
+        }
+    }
+    draw(a){if(customSprites.platformer_trap){a.save();a.translate(this.x+this.w/2,this.y+this.h/2);a.rotate(this.angle||0);a.drawImage(customSprites.platformer_trap,-this.w/2,-this.h/2,this.w,this.h);a.restore()}else{a.fillStyle="#ef4444";a.fillRect(this.x,this.y,this.w,this.h)}}}
+
+
+// ==================== Платформер: Основная функция и Редактор ====================
+function startPlatformer(){
+    clearPreviousGame();
+    const gameArea = document.getElementById("gameArea");
+    const customCampaigns = JSON.parse(localStorage.getItem('customPlatformerCampaigns')) || [];
+    let customLevelsHTML = '';
+    let customCampaignsHTML = '';
+
+    if (customLevels.length > 0) {
+        customLevels.forEach((level, index) => {
+            customLevelsHTML += `<div class="flex items-center justify-center gap-2"><button onclick="initPlatformerGame('classic', [customLevels[${index}]], true)" class="menu-btn !text-center flex-grow">${level.name}</button><button onclick="deleteCustomLevel(${index})" class="bg-red-600 hover:bg-red-700 text-white font-bold p-2 rounded-lg text-sm" title="Удалить уровень">🗑️</button></div>`;
+        });
+    } else {
+        customLevelsHTML = '<p class="text-gray-400">Вы еще не создали ни одного уровня.</p>';
+    }
+
+    if (customCampaigns.length > 0) {
+         customCampaigns.forEach((campaign) => {
+            const campaignLevelsData = campaign.levelNames.map(name => customLevels.find(l => l.name === name)).filter(Boolean);
+            if (campaignLevelsData.length > 0) {
+                 customCampaignsHTML += `<div class="flex items-center justify-center gap-2"><button onclick='initPlatformerGame("classic", ${JSON.stringify(campaignLevelsData)}, true)' class="menu-btn !text-center !w-auto !px-8 !bg-yellow-600 hover:!bg-yellow-500">${campaign.name}</button></div>`;
+            }
+        });
+    }
+
+    gameArea.innerHTML = `
+        <div class="text-center">
+            <h2 class="text-2xl font-bold mb-4">Официальные Кампании</h2>
+            <div class="flex flex-col sm:flex-row justify-center gap-4 mb-8">
+                <button onclick="initPlatformerGame('classic', platformerLevels)" class="menu-btn !text-center !w-auto !px-8">Классическая</button>
+                <button onclick="initPlatformerGame('timed', platformerLevels)" class="menu-btn !text-center !w-auto !px-8">На время ⏱️</button>
+            </div>
+            ${customCampaignsHTML ? `<h2 class="text-2xl font-bold mb-4">Ваши Кампании</h2><div class="flex flex-col items-center gap-4 mb-8">${customCampaignsHTML}</div>` : ''}
+            <h2 class="text-2xl font-bold mb-4">Пользовательские Уровни</h2>
+            <div class="flex flex-col items-center gap-4">${customLevelsHTML}</div>
+        </div>`;
+}
+
+function deleteCustomLevel(index) {
+    const levelName = customLevels[index].name;
+    if (confirm(`Вы уверены, что хотите удалить уровень "${levelName}"? Это действие нельзя будет отменить.`)) {
+        customLevels.splice(index, 1);
+        localStorage.setItem('customPlatformerLevels', JSON.stringify(customLevels));
+        startPlatformer();
+    }
+}
+
+function initPlatformerGame(gameMode, levelsData, isCustom = false){
+    const levelList = Array.isArray(levelsData) ? levelsData : [levelsData];
+    if (levelList.length === 0) { showNotification("Не удалось загрузить уровни кампании."); startPlatformer(); return; }
+
+    const stats = getGlobalStats(); stats.gamesPlayed.platformer = true; updateGlobalStats('gamesPlayed', stats.gamesPlayed);
+    clearPreviousGame();
+    startGameTimer();
+    const a=document.getElementById("gameArea");a.innerHTML=`<div id="game-wrapper" class="fullscreen-wrapper"><canvas id="platformerCanvas" width="600" height="500"></canvas><button class="fullscreen-btn" title="На весь экран">⛶</button></div><div class="game-ui flex justify-between items-center mt-4 px-4 text-xl font-semibold"><div id="platformerScore">Очки: 0</div><div id="platformerLevel">Уровень: 1</div><div id="platformerLives"></div></div><div class="game-ui text-center text-sm mt-2 text-gray-400">Управление: Стрелки. Пауза: 'P'</div><div id="statsContainer" class="mt-6"></div>`;setupFullscreen('game-wrapper');const b=document.getElementById("platformerCanvas"),c=b.getContext("2d");setupPause(b,c);const d=0.6,e=new Player();let f=[],g=[],h=[],j=[];
+    let k = 0; 
+    let l=0,m={date:(new Date).toLocaleString(),finalScore:0,totalTime:0,levels:[]};const n='platformerGameStats';const LEVEL_TIME=60;
+    
+    // ЗАГРУЗКА И РЕГИСТРАЦИЯ КАСТОМНЫХ СКРИПТОВ
+    const savedScripts = JSON.parse(localStorage.getItem('customPlatformerScripts')) || [];
+    savedScripts.forEach(script => {
+        try {
+            // 'self' - это сам объект (враг/ловушка), 'player' - объект игрока
+            const behaviorFunc = new Function('self', 'player', 'platforms', 'gravity', 'ctx', script.code);
+            registerBehavior(script.type, script.name, { update: behaviorFunc });
+        } catch (e) { console.error(`Ошибка при загрузке скрипта "${script.name}":`, e); }
+    });
+
+    function o(){const p=localStorage.getItem(n);return p?JSON.parse(p):[]}function q(p){let r=o();r.unshift(p);if(r.length>10)r=r.slice(0,10);localStorage.setItem(n,JSON.stringify(r))}
+    function s(){const p=document.getElementById('statsContainer'),r=o();if(!p) return; if(r.length===0){p.innerHTML='<h2 class="text-xl font-semibold mb-2 text-center">История игр пуста</h2>';return}let t=`<h2 class="text-xl font-semibold mb-2 text-center">История игр</h2><table class="min-w-full text-center"><thead class="bg-gray-700"><tr><th class="py-2 px-4 font-medium text-gray-300">Дата</th><th class="py-2 px-4 font-medium text-gray-300">Финальный счет</th><th class="py-2 px-4 font-medium text-gray-300">Общее время</th><th class="py-2 px-4 font-medium text-gray-300">Пройдено</th></tr></thead><tbody class="divide-y divide-gray-700">`;r.forEach(u=>{t+=`<tr><td class="py-2 px-4">${u.date}</td><td class="py-2 px-4">${u.finalScore}</td><td class="py-2 px-4">${u.totalTime.toFixed(2)} с.</td><td class="py-2 px-4">${u.levels.length} ур.</td></tr>`});t+=`</tbody></table>`;p.innerHTML=t}
+    
+    // ИСПРАВЛЕНО ОТОБРАЖЕНИЕ НОМЕРА УРОВНЯ
+    function E(score, lives, levelIndex, totalLevels){
+        let timerText=null;
+        if(gameMode==='timed'){const timeElapsed=LEVEL_TIME-((Date.now()-l)/1000);timerText=`Время: ${Math.max(0,timeElapsed).toFixed(1)}`}
+        c.fillStyle="white";c.font="20px Inter";
+        c.textAlign="left";c.fillText(`Очки: ${score}`,15,30);
+        c.textAlign="right";c.fillText("❤️".repeat(lives),b.width-15,30);
+        c.textAlign="center";
+        if(timerText) c.fillText(timerText,b.width/2,50);
+        c.fillText(`Уровень: ${levelIndex+1}/${totalLevels}`,b.width/2,30);
+    }
+    
+    function v(){e.lives--;e.score=Math.max(0,e.score-100);e.reset(currentLevelData.playerStart);l=Date.now()}
+    let currentLevelData;
+    function w(p){
+        currentLevelData = isCustom ? levelList[p].data : levelList[p];
+        f=currentLevelData.platforms?.map(t=>({...t}))||[];g=currentLevelData.enemies?.map(t=>new Enemy(t))||[];h=currentLevelData.traps?.map(t=>new Trap(t))||[];j=currentLevelData.portals?.map(t=>({...t}))||[];
+        e.reset(currentLevelData.playerStart);
+        const livesBefore = e.lives; 
+        if(document.getElementById("platformerLevel"))document.getElementById("platformerLevel").innerText=`Уровень: ${p+1}/${levelList.length}`;
+        l=Date.now(); 
+        return livesBefore === e.initialLives;
+    }
+    let passedWithoutDamage = w(k); s(); const x={ArrowLeft:false,ArrowRight:false,ArrowUp:false};document.onkeydown=(p)=>{if(x.hasOwnProperty(p.key))p.preventDefault(),x[p.key]=true};document.onkeyup=(p)=>{if(x.hasOwnProperty(p.key))p.preventDefault(),x[p.key]=false;if(p.key.toLowerCase()==="p")isPaused=!isPaused};window.onblur=()=>{x.ArrowLeft=false;x.ArrowRight=false;x.ArrowUp=false};
+    
+    function y(){
+        if(gameAnimationId===null)return;if(isPaused){drawPauseScreen(c,b);gameAnimationId=requestAnimationFrame(y);return}e.update(x,d,f);g.forEach(p=>p.update(d,f, e, c));h.forEach(p=>p.update(e, c));if(gameMode==='timed'){const p=LEVEL_TIME-((Date.now()-l)/1000);if(p<=0){v();passedWithoutDamage=false}}for(let p=g.length-1;p>=0;p--){const r=g[p];if(e.x<r.x+r.w&&e.x+e.width>r.x&&e.y<r.y+r.h&&e.y+e.height>r.y){if(e.dy>0&&e.y+e.height<r.y+20){r.health--;e.dy=-8;if(r.health<=0){g.splice(p,1);e.score+=100}}else if(e.lastHit<=0){v();passedWithoutDamage=false}}}h.forEach(p=>{if(e.x<p.x+p.w&&e.x+e.width>p.x&&e.y<p.y+p.h&&e.y+e.height>p.y){if(e.lastHit<=0){v();passedWithoutDamage=false}}});j.forEach(p=>{if(e.x<p.x+p.w&&e.x+e.width>p.x&&e.y<p.y+p.h&&e.y+e.height>p.y){e.x=p.target.x;e.y=p.target.y}});if(e.y>b.height){v();passedWithoutDamage=false}if(e.lives<=0){m.finalScore=e.score;m.totalTime=m.levels.reduce((p,r)=>p+r.time,0);q(m);s();stopGameTimer();updateGlobalStats('losses',1);showNotification(`Игра окончена! Ваши очки: ${e.score}`);gameAnimationId=null;return}
+        if(g.length===0 && levelList[k]){
+            if(passedWithoutDamage)unlockAchievement('platformer_no_damage');const p=(Date.now()-l)/1000;m.levels.push({level:k+1,time:p});k++;
+            if(k >= levelList.length){m.finalScore=e.score;m.totalTime=m.levels.reduce((r,t)=>r+t.time,0);q(m);s();stopGameTimer();updateGlobalStats('wins',1);if(!isCustom)unlockAchievement('platformer_win');if(gameMode==='timed')unlockAchievement('platformer_timed_win');showNotification(`ПОБЕДА! Финальный счет: ${e.score}`);gameAnimationId=null;return}
+            else{showNotification(`Уровень пройден!`);passedWithoutDamage=w(k);}
+        }
+        drawCanvasBackground(c,b);f.forEach(p=>{if(customSprites.platformer_platform)c.drawImage(customSprites.platformer_platform,p.x,p.y,p.w,p.h);else{c.fillStyle="#4b5563";c.fillRect(p.x,p.y,p.w,p.h)}});j.forEach(p=>{if(customSprites.platformer_portal)c.drawImage(customSprites.platformer_portal,p.x,p.y,p.w,p.h);else{c.fillStyle="#60a5fa";c.fillRect(p.x,p.y,p.w,p.h)}});h.forEach(p=>p.draw(c));g.forEach(p=>p.draw(c));e.draw(c);if(document.getElementById("platformerLives"))document.getElementById("platformerLives").innerText="❤️".repeat(e.lives);if(document.getElementById("platformerScore"))document.getElementById("platformerScore").innerText=`Очки: ${e.score}`;
+        // ИСПРАВЛЕН ВЫЗОВ ФУНКЦИИ
+        if(document.fullscreenElement)E(e.score, e.lives, k, levelList.length);
+        drawNotification(c,b);gameAnimationId=requestAnimationFrame(y)}
+    gameAnimationId=requestAnimationFrame(y)
+}
+
+function startLevelEditor() {
+    clearPreviousGame();
+    const gameArea = document.getElementById("gameArea");
+    gameArea.innerHTML = `
+        <div class="flex flex-col xl:flex-row gap-4">
+            <div id="editor-canvas-wrapper" class="flex-grow"><canvas id="editorCanvas" width="600" height="500" style="cursor: crosshair;"></canvas></div>
+            <div class="w-full xl:w-96 flex-shrink-0 bg-gray-700 p-4 rounded-lg flex flex-col">
+                <div class="flex border-b border-gray-600 mb-3">
+                    <button class="tab-btn active" data-tab="editor">Уровень</button>
+                    <button class="tab-btn" data-tab="campaigns">Кампании</button>
+                    <button class="tab-btn" data-tab="scripts">Скрипты</button>
+                </div>
+
+                <!-- ВКЛАДКА РЕДАКТОРА УРОВНЕЙ -->
+                <div id="editor-tab" class="tab-content flex flex-col gap-4">
+                    <div>
+                        <h2 class="text-xl font-bold mb-2">Инструменты</h2>
+                        <div class="grid grid-cols-3 gap-2">
+                            <button class="editor-tool p-2 bg-gray-600 hover:bg-gray-500 rounded selected" data-tool="platform">Платформа</button>
+                            <button class="editor-tool p-2 bg-gray-600 hover:bg-gray-500 rounded" data-tool="enemy_walk">Враг W</button>
+                            <button class="editor-tool p-2 bg-gray-600 hover:bg-gray-500 rounded" data-tool="enemy_jumper">Враг J</button>
+                            <button class="editor-tool p-2 bg-gray-600 hover:bg-gray-500 rounded" data-tool="trap">Ловушка</button>
+                            <button class="editor-tool p-2 bg-gray-600 hover:bg-gray-500 rounded" data-tool="portal">Портал</button>
+                            <button class="editor-tool p-2 bg-gray-600 hover:bg-gray-500 rounded" data-tool="player">Игрок</button>
+                        </div>
+                    </div>
+                    <!-- БЛОК ДЛЯ ПРИВЯЗКИ СКРИПТА -->
+                    <div id="script-container" class="hidden">
+                        <label for="script-selector" class="text-sm font-medium">Привязать скрипт:</label>
+                        <select id="script-selector" class="w-full p-1 rounded bg-gray-800 border border-gray-600 text-white text-sm"><option value="">Нет</option></select>
+                    </div>
+                    <p class="text-xs text-gray-400 -mt-2">Правый клик - стереть. ESC - отменить.</p>
+                    <div>
+                        <h2 class="text-xl font-bold mb-2">Сохранить Уровень</h2>
+                        <input type="text" id="levelName" placeholder="Название уровня" class="w-full p-2 rounded bg-gray-800 border border-gray-600 mb-2 text-white">
+                        <button id="saveLevelBtn" class="w-full menu-btn !bg-green-600 !text-white !text-center">Сохранить Уровень</button>
+                    </div>
+                </div>
+
+                <!-- ВКЛАДКА РЕДАКТОРА КАМПАНИЙ -->
+                <div id="campaigns-tab" class="tab-content hidden">
+                     <!-- СПИСОК СУЩЕСТВУЮЩИХ КАМПАНИЙ -->
+                     <div id="existing-campaigns-wrapper">
+                        <h2 class="text-xl font-bold mb-2">Существующие кампании</h2>
+                        <div id="existing-campaigns-list" class="max-h-32 overflow-y-auto mb-4 p-2 bg-gray-800 rounded"></div>
+                     </div>
+                     <h2 class="text-xl font-bold mb-2">Создать/Изменить Кампанию</h2>
+                     <p class="text-xs text-gray-400 mb-2">Перетащите уровни из списка слева в список справа.</p>
+                     <div class="grid grid-cols-2 gap-3 h-48">
+                        <div><h3 class="font-semibold text-center mb-1">Доступные</h3><ul id="available-levels" class="h-full overflow-y-auto border border-gray-600 rounded p-1"></ul></div>
+                        <div><h3 class="font-semibold text-center mb-1">В кампании</h3><ul id="campaign-levels" class="h-full overflow-y-auto border border-gray-600 rounded p-1"></ul></div>
+                     </div>
+                     <input type="text" id="campaignName" placeholder="Название кампании" class="w-full p-2 mt-3 rounded bg-gray-800 border border-gray-600 mb-2 text-white">
+                     <button id="saveCampaignBtn" class="w-full menu-btn !bg-yellow-600 !text-white !text-center">Сохранить Кампанию</button>
+                </div>
+
+                <!-- ВКЛАДКА РЕДАКТОРА СКРИПТОВ -->
+                <div id="scripts-tab" class="tab-content hidden">
+                     <h2 class="text-xl font-bold mb-2">Редактор Скриптов</h2>
+                     <p class="text-xs text-gray-400 mb-2">Скрипты выполняются каждый кадр. Используйте 'self', чтобы менять свойства объекта (x, y, dx, dy и т.д.).</p>
+                     <textarea id="scriptEditor" class="w-full h-32 p-2 font-mono text-sm bg-gray-900 rounded border border-gray-600 text-white" placeholder="// Пример: враг-патрульный\nif (!self.initialX) self.initialX = self.x;\nself.x = self.initialX + Math.sin(Date.now() / 500) * 50;"></textarea>
+                     <div class="flex gap-2 mt-2 items-center script-editor">
+                        <input type="text" id="scriptName" placeholder="Название" class="flex-grow p-2 rounded bg-gray-800 border border-gray-600 text-white">
+                        <select id="scriptType" class="p-2 rounded bg-gray-800 border border-gray-600 text-white"><option value="enemyBehaviors">Враг</option><option value="trapBehaviors">Ловушка</option></select>
+                        <button id="saveScriptBtn" class="menu-btn !bg-blue-600 !text-white !text-center !w-auto !px-4">Сохранить</button>
+                     </div>
+                     <div id="saved-scripts-list" class="mt-4"></div>
+                </div>
+            </div>
+        </div>
+        <style>.tab-btn{padding:8px 16px;border:none;background:none;color:#9ca3af;cursor:pointer;transition:all .2s}.tab-btn.active{color:white;border-bottom:2px solid #2563eb}.editor-tool.selected{background-color:#2563eb;color:white}#available-levels li,#campaign-levels li{background-color:#4b5563;color:white;padding:6px;margin-bottom:6px;border-radius:4px;cursor:grab}#available-levels li:active,#campaign-levels li:active{cursor:grabbing}.drag-over{border:2px dashed #60a5fa}</style>`;
+
+    const canvas = document.getElementById('editorCanvas'), ctx = canvas.getContext('2d');
+    const gridSize = 20; let selectedTool = 'platform';
+    let levelData = { platforms: [], enemies: [], traps: [], portals: [], playerStart: {x: 50, y: 350} };
+    let isDrawing = false; let startPos = null; let portalStart = null;
+    let savedScripts = JSON.parse(localStorage.getItem('customPlatformerScripts')) || [];
+
+    // --- ОБЩАЯ ЛОГИКА ---
+    function getMousePos(e) { const rect = canvas.getBoundingClientRect(), scaleX = canvas.width / rect.width, scaleY = canvas.height / rect.height; const x = (e.clientX - rect.left) * scaleX, y = (e.clientY - rect.top) * scaleY; return { gridX: Math.floor(x / gridSize) * gridSize, gridY: Math.floor(y / gridSize) * gridSize }; }
+    function drawGrid() { ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)'; ctx.lineWidth = 1; for (let x = 0; x < canvas.width; x += gridSize) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke(); } for (let y = 0; y < canvas.height; y += gridSize) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke(); } }
+    document.onkeydown = (e) => { if (e.key === 'Escape') { isDrawing = false; portalStart = null; drawLevel(); } };
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+    // --- ЛОГИКА РЕДАКТОРА УРОВНЕЙ ---
+    const scriptContainer = document.getElementById('script-container');
+    const scriptSelector = document.getElementById('script-selector');
+    
+    document.querySelectorAll('.editor-tool').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelector('.editor-tool.selected').classList.remove('selected');
+            btn.classList.add('selected'); selectedTool = btn.dataset.tool; portalStart = null;
+            // Показываем/скрываем выбор скрипта
+            if (selectedTool.startsWith('enemy') || selectedTool === 'trap') {
+                updateScriptSelector();
+                scriptContainer.classList.remove('hidden');
+            } else {
+                scriptContainer.classList.add('hidden');
+            }
+        });
+    });
+
+    function drawLevel() {
+        drawCanvasBackground(ctx, canvas); drawGrid();
+        ctx.fillStyle = "#4b5563"; levelData.platforms.forEach(p => ctx.fillRect(p.x, p.y, p.w, p.h));
+        levelData.enemies.forEach(e => { ctx.fillStyle = e.ai === 'jumper' ? "#be185d" : "#f87171"; ctx.fillRect(e.x, e.y, e.w, e.h); });
+        ctx.fillStyle = "#ef4444"; levelData.traps.forEach(t => ctx.fillRect(t.x, t.y, t.w, t.h));
+        levelData.portals.forEach((p, i) => { ctx.fillStyle = i % 2 === 0 ? "#60a5fa" : "#3b82f6"; ctx.fillRect(p.x, p.y, p.w, p.h); });
+        ctx.fillStyle = "#4ade80"; ctx.fillRect(levelData.playerStart.x, levelData.playerStart.y, 30, 30);
+        if (portalStart) { ctx.strokeStyle = '#60a5fa'; ctx.lineWidth = 2; ctx.strokeRect(portalStart.x, portalStart.y, 15, 50); }
+    }
+    
+    canvas.addEventListener('mousedown', (e) => {
+        const { gridX, gridY } = getMousePos(e);
+        if (e.button === 0) {
+            isDrawing = true; startPos = { x: gridX, y: gridY };
+            const scriptName = scriptSelector.value;
+            if (selectedTool === 'portal') { if (!portalStart) portalStart = { x: gridX, y: gridY }; else { levelData.portals.push({ x: portalStart.x, y: portalStart.y, w: 15, h: 50, target: { x: gridX, y: gridY } }); levelData.portals.push({ x: gridX, y: gridY, w: 15, h: 50, target: { x: portalStart.x, y: portalStart.y } }); portalStart = null; } } 
+            else if (selectedTool === 'player') { levelData.playerStart = { x: gridX, y: gridY }; } 
+            else if (selectedTool !== 'platform') {
+                 if (selectedTool === 'enemy_walk') levelData.enemies.push({ x: gridX, y: gridY - 10, w: 30, h: 30, dx: 2, health: 1, ai: 'walk', scriptName });
+                 if (selectedTool === 'enemy_jumper') levelData.enemies.push({ x: gridX, y: gridY - 10, w: 30, h: 30, dx: 2, health: 1, ai: 'jumper', jumpCooldown: 120, scriptName });
+                 if (selectedTool === 'trap') levelData.traps.push({ x: gridX, y: gridY, w: gridSize, h: gridSize, scriptName });
+            }
+            drawLevel();
+        } else if (e.button === 2) {
+            levelData.platforms = levelData.platforms.filter(p => !(gridX >= p.x && gridX < p.x + p.w && gridY >= p.y && gridY < p.y + p.h));
+            levelData.enemies = levelData.enemies.filter(e => !(gridX >= e.x && gridX < e.x + e.w && gridY >= e.y && gridY < e.y + e.h));
+            levelData.traps = levelData.traps.filter(t => !(gridX >= t.x && gridX < t.x + t.w && gridY >= t.y && gridY < t.y + t.h));
+            levelData.portals = levelData.portals.filter(p => !(gridX >= p.x && gridX < p.x + p.w && gridY >= p.y && gridY < p.y + p.h));
+            drawLevel();
+        }
+    });
+    canvas.addEventListener('mousemove', (e) => { if (!isDrawing) return; drawLevel(); const { gridX, gridY } = getMousePos(e); if (selectedTool === 'platform') { ctx.fillStyle = 'rgba(75, 85, 99, 0.5)'; ctx.fillRect(startPos.x, startPos.y, gridX - startPos.x + gridSize, gridSize); } else if (selectedTool === 'portal' && portalStart) { ctx.strokeStyle = 'rgba(96, 165, 250, 0.7)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(portalStart.x + 7, portalStart.y + 25); ctx.lineTo(gridX + 7, gridY + 25); ctx.stroke(); } });
+    canvas.addEventListener('mouseup', (e) => { if (!isDrawing || selectedTool !== 'platform') { isDrawing = false; return; } isDrawing = false; const { gridX } = getMousePos(e); const newPlatform = { x: Math.min(startPos.x, gridX), y: startPos.y, w: Math.abs(gridX - startPos.x) + gridSize, h: gridSize }; levelData.platforms.push(newPlatform); drawLevel(); });
+    document.getElementById('saveLevelBtn').addEventListener('click', () => { const name = document.getElementById('levelName').value; if (!name) { showNotification("Пожалуйста, введите название уровня."); return; } customLevels.push({ name, data: JSON.parse(JSON.stringify(levelData)) }); localStorage.setItem('customPlatformerLevels', JSON.stringify(customLevels)); showNotification(`Уровень "${name}" сохранен!`); levelData = { platforms: [], enemies: [], traps: [], portals: [], playerStart: {x: 50, y: 350} }; document.getElementById('levelName').value = ''; drawLevel(); });
+
+    // --- ЛОГИКА РЕДАКТОРА КАМПАНИЙ ---
+    const availableList = document.getElementById('available-levels');
+    const campaignList = document.getElementById('campaign-levels');
+    const existingCampaignsList = document.getElementById('existing-campaigns-list');
+    
+    function loadAndDisplayCampaigns() {
+        existingCampaignsList.innerHTML = '';
+        const campaigns = JSON.parse(localStorage.getItem('customPlatformerCampaigns')) || [];
+        if (campaigns.length === 0) { existingCampaignsList.innerHTML = '<p class="text-gray-400 text-sm">Кампаний пока нет.</p>'; return; }
+        campaigns.forEach((campaign, index) => {
+            const div = document.createElement('div');
+            div.className = 'p-2 bg-gray-900 rounded mb-2';
+            div.innerHTML = `<div class="flex justify-between items-center"><strong class="text-white">${campaign.name}</strong><button data-index="${index}" class="delete-campaign-btn bg-red-600 text-white px-2 py-0.5 rounded text-xs">Удалить</button></div><p class="text-xs text-gray-400">${campaign.levelNames.join(', ')}</p>`;
+            existingCampaignsList.appendChild(div);
+        });
+    }
+    existingCampaignsList.addEventListener('click', e => {
+        if (e.target.classList.contains('delete-campaign-btn')) {
+            const index = parseInt(e.target.dataset.index, 10);
+            const campaigns = JSON.parse(localStorage.getItem('customPlatformerCampaigns')) || [];
+            campaigns.splice(index, 1);
+            localStorage.setItem('customPlatformerCampaigns', JSON.stringify(campaigns));
+            loadAndDisplayCampaigns();
+        }
+    });
+
+    function updateCampaignEditorLists() { availableList.innerHTML = ''; customLevels.forEach(level => { const li = document.createElement('li'); li.textContent = level.name; li.draggable = true; li.dataset.levelName = level.name; availableList.appendChild(li); }); }
+    let draggedItem = null;
+    gameArea.addEventListener('dragstart', e => { if (e.target.tagName === 'LI') { draggedItem = e.target; setTimeout(() => e.target.style.display = 'none', 0); } });
+    gameArea.addEventListener('dragend', e => { if (draggedItem) { setTimeout(() => { draggedItem.style.display = 'block'; draggedItem = null; }, 0); } });
+    [availableList, campaignList].forEach(list => { list.addEventListener('dragover', e => { e.preventDefault(); list.classList.add('drag-over'); }); list.addEventListener('dragleave', e => list.classList.remove('drag-over')); list.addEventListener('drop', e => { e.preventDefault(); list.classList.remove('drag-over'); if (draggedItem) list.appendChild(draggedItem); }); });
+    document.getElementById('saveCampaignBtn').addEventListener('click', () => { const name = document.getElementById('campaignName').value.trim(); const levelItems = Array.from(campaignList.querySelectorAll('li')); if (!name) { showNotification("Введите название кампании."); return; } if (levelItems.length < 1) { showNotification("Кампания должна состоять минимум из 1 уровня."); return; } const levelNames = levelItems.map(item => item.dataset.levelName); let campaigns = JSON.parse(localStorage.getItem('customPlatformerCampaigns')) || []; campaigns.push({ name, levelNames }); localStorage.setItem('customPlatformerCampaigns', JSON.stringify(campaigns)); showNotification(`Кампания "${name}" сохранена!`); document.getElementById('campaignName').value = ''; campaignList.innerHTML = ''; updateCampaignEditorLists(); loadAndDisplayCampaigns(); });
+    
+    // --- ЛОГИКА РЕДАКТОРА СКРИПТОВ ---
+    const savedScriptsList = document.getElementById('saved-scripts-list');
+    
+    function updateScriptSelector() {
+        scriptSelector.innerHTML = '<option value="">Нет (стандарт)</option>';
+        const toolType = selectedTool.startsWith('enemy') ? 'enemyBehaviors' : 'trapBehaviors';
+        savedScripts.filter(s => s.type === toolType).forEach(s => {
+            const option = new Option(s.name, s.name);
+            scriptSelector.appendChild(option);
+        });
+    }
+
+    function loadAndDisplayScripts() {
+        savedScriptsList.innerHTML = '';
+        if (savedScripts.length === 0) { savedScriptsList.innerHTML = '<p class="text-gray-400 text-sm">Скриптов пока нет.</p>'; return; }
+        savedScripts.forEach((script, index) => {
+            const div = document.createElement('div');
+            div.className = 'p-2 bg-gray-900 rounded mb-2';
+            const typeText = script.type === 'enemyBehaviors' ? 'Враг' : 'Ловушка';
+            div.innerHTML = `<div class="flex justify-between items-center"><strong class="text-white">${script.name} <span class="text-xs text-gray-400">(${typeText})</span></strong><button data-index="${index}" class="delete-script-btn bg-red-600 text-white px-2 py-0.5 rounded text-xs">Удалить</button></div>`;
+            savedScriptsList.appendChild(div);
+        });
+    }
+    savedScriptsList.addEventListener('click', e => {
+        if (e.target.classList.contains('delete-script-btn')) {
+            const index = parseInt(e.target.dataset.index, 10);
+            savedScripts.splice(index, 1);
+            localStorage.setItem('customPlatformerScripts', JSON.stringify(savedScripts));
+            loadAndDisplayScripts();
+        }
+    });
+    
+    document.getElementById('saveScriptBtn').addEventListener('click', () => {
+        const name = document.getElementById('scriptName').value.trim();
+        const code = document.getElementById('scriptEditor').value.trim();
+        const type = document.getElementById('scriptType').value;
+        if (!name || !code) { showNotification("Введите имя и код скрипта."); return; }
+        savedScripts.push({ name, code, type });
+        localStorage.setItem('customPlatformerScripts', JSON.stringify(savedScripts));
+        showNotification(`Скрипт "${name}" сохранен!`);
+        document.getElementById('scriptName').value = '';
+        document.getElementById('scriptEditor').value = '';
+        loadAndDisplayScripts();
+    });
+
+    // --- ОБЩАЯ ЛОГИКА ВКЛАДОК ---
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelector('.tab-btn.active').classList.remove('active');
+            btn.classList.add('active');
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.add('hidden'));
+            const tabId = btn.dataset.tab + '-tab';
+            document.getElementById(tabId).classList.remove('hidden');
+
+            const isCanvasVisible = (tabId === 'editor-tab');
+            canvas.style.display = isCanvasVisible ? 'block' : 'none';
+            if (isCanvasVisible) drawLevel();
+            
+            if (tabId === 'campaigns-tab') { updateCampaignEditorLists(); loadAndDisplayCampaigns(); }
+            if (tabId === 'scripts-tab') { loadAndDisplayScripts(); }
+        });
+    });
+
+    drawLevel();
+}
+
+// ==================== Пинг-понг ====================
+function startPingPong(){const a=getGlobalStats();a.gamesPlayed.pong=true;updateGlobalStats('gamesPlayed',a.gamesPlayed);clearPreviousGame();startGameTimer();const b=document.getElementById("gameArea");b.innerHTML=`<div id="game-wrapper" class="fullscreen-wrapper"><canvas id="pongCanvas" width="600" height="500"></canvas><button class="fullscreen-btn" title="На весь экран">⛶</button></div><div id="pongScore" class="text-center mt-4 text-3xl font-semibold">0 - 0</div><div id="statsContainer" class="mt-6"></div>`;setupFullscreen('game-wrapper');const c=document.getElementById('pongCanvas'),d=c.getContext('2d');const e=10,f=100,g=7;let h={x:10,y:c.height/2-f/2,w:e,h:f,score:0};let i={x:c.width-e-10,y:c.height/2-f/2,w:e,h:f,score:0};let j={x:c.width/2,y:c.height/2,r:g,dx:5,dy:5};const k='pingPongGameStats';function l(){const p=localStorage.getItem(k);return p?JSON.parse(p):[]}function n(p){let q=l();q.unshift(p);if(q.length>10)q=q.slice(0,10);localStorage.setItem(k,JSON.stringify(q))}function o(){const p=document.getElementById('statsContainer'),q=l();if(q.length===0){p.innerHTML='<h2 class="text-xl font-semibold mb-2 text-center">История игр пуста</h2>';return}let r=`<h2 class="text-xl font-semibold mb-2 text-center">История игр</h2><table class="min-w-full text-center"><thead class="bg-gray-700"><tr><th class="py-2 px-4 font-medium text-gray-300">Дата</th><th class="py-2 px-4 font-medium text-gray-300">Результат</th><th class="py-2 px-4 font-medium text-gray-300">Финальный счет</th></tr></thead><tbody class="divide-y divide-gray-700">`;q.forEach(s=>{r+=`<tr><td class="py-2 px-4">${s.date}</td><td class="py-2 px-4">${s.result}</td><td class="py-2 px-4">${s.score}</td></tr>`});r+=`</tbody></table>`;p.innerHTML=r}o();function m(){j.x=c.width/2;j.y=c.height/2;j.dx=-j.dx;j.dy=Math.random()>0.5?5:-5}c.addEventListener('mousemove',p=>{const q=c.getBoundingClientRect();h.y=p.clientY-q.top-h.h/2});function s(){if(gameAnimationId===null)return;j.x+=j.dx;j.y+=j.dy;const p=i.y+i.h/2;if(p<j.y-35)i.y+=4;else if(p>j.y+35)i.y-=4;if(j.y+j.r>c.height||j.y-j.r<0)j.dy=-j.dy;if(j.x-j.r<h.x+h.w&&j.y>h.y&&j.y<h.y+h.h)j.dx=-j.dx;if(j.x+j.r>i.x&&j.y>i.y&&j.y<i.y+i.h)j.dx=-j.dx;if(j.x+j.r<0){i.score++;m()}else if(j.x-j.r>c.width){h.score++;m()}drawCanvasBackground(d,c);d.fillStyle='rgba(255,255,255,0.2)';for(let q=0;q<c.height;q+=20)d.fillRect(c.width/2-1,q,2,10);d.fillStyle='white';d.fillRect(h.x,h.y,h.w,h.h);d.fillRect(i.x,i.y,i.w,i.h);d.beginPath();d.arc(j.x,j.y,j.r,0,Math.PI*2);d.fill();document.getElementById('pongScore').innerText=`${h.score} - ${i.score}`;if(h.score>=5||i.score>=5){const q=h.score>=5,r=q?"Вы":"Компьютер";stopGameTimer();if(q){updateGlobalStats('wins',1);unlockAchievement('pong_win');if(i.score===0)unlockAchievement('pong_flawless')}else{updateGlobalStats('losses',1)}showNotification(`${r} победил!`);n({date:(new Date).toLocaleString(),result:q?"Победа":"Поражение",score:`${h.score} - ${i.score}`});o();gameAnimationId=null;return}if(document.fullscreenElement){d.fillStyle="white";d.font="30px Inter";d.textAlign="center";d.fillText(`${h.score} - ${i.score}`,c.width/2,40)}drawNotification(d,c);gameAnimationId=requestAnimationFrame(s)}gameAnimationId=requestAnimationFrame(s)}
+
+// ==================== 3 в ряд (КОРРЕКТНАЯ ЛОГИКА) ====================
+const match3Levels=[{moves:20,score:1e3},{time:60,score:1500},{moves:25,time:90,score:2e3},{moves:30,score:2500},{time:45,score:3e3},{moves:15,time:60,score:3500},{moves:35,score:4e3},{time:30,score:5e3},{moves:20,time:45,score:6e3},{moves:40,time:120,score:8e3}];
+const GRID_SIZE=8;
+const NUM_GEMS=6;
+const GEM_SIZE=50;
+const BOMB_RADIUS=1;
+const GEM_COLORS=['#ef4444','#fb923c','#facc15','#4ade80','#60a5fa','#a78bfa'];
+
+function startMatch3(){
+    const stats = getGlobalStats(); stats.gamesPlayed.match3 = true; updateGlobalStats('gamesPlayed', stats.gamesPlayed);
+    clearPreviousGame();
+    startGameTimer();
+    const gameArea = document.getElementById("gameArea");
+    gameArea.innerHTML = `<div id="game-wrapper" class="fullscreen-wrapper"><canvas id="match3Canvas" width="600" height="500"></canvas><button class="fullscreen-btn" title="На весь экран">⛶</button></div><div class="game-ui flex justify-between items-center mt-4 px-4 text-xl font-semibold"><div id="match3Level">Уровень: 1</div><div id="match3Score">Счет: 0</div><div id="match3Moves"></div><div id="match3Time"></div></div>`;
+    setupFullscreen('game-wrapper');
+    const canvas = document.getElementById('match3Canvas'), ctx = canvas.getContext('2d');
+    
+    let currentLevel = 0;
+    let board = [];
+    let selectedGem = null;
+    let movesLeft, timeLeft, score;
+    let levelTimer;
+    let isProcessing = false;
+    const boardSize = GRID_SIZE * GEM_SIZE;
+    const offsetX = (canvas.width - boardSize) / 2;
+    const offsetY = (canvas.height - boardSize) / 2;
+
+    function animate(target, props, duration) {
+        return new Promise(resolve => {
+            const start = performance.now();
+            const startProps = {};
+            for (const key in props) { startProps[key] = target[key]; }
+            function frame(now) {
+                const p = Math.min(1, (now - start) / duration);
+                for (const key in props) { target[key] = startProps[key] + (props[key] - startProps[key]) * p; }
+                if (p < 1) requestAnimationFrame(frame);
+                else resolve();
+            }
+            requestAnimationFrame(frame);
+        });
+    }
+
+    function initLevel(levelIndex) {
+        const level = match3Levels[levelIndex];
+        movesLeft = level.moves;
+        timeLeft = level.time;
+        score = 0;
+        clearInterval(levelTimer);
+        if (level.time) {
+            levelTimer = setInterval(() => {
+                if (isPaused || isProcessing || gameAnimationId === null) return;
+                timeLeft--;
+                if (timeLeft <= 0) endGame(false);
+            }, 1000);
+        }
+        generateBoard();
+        updateUI();
+    }
+
+    function generateBoard() {
+        board = [];
+        for (let r = 0; r < GRID_SIZE; r++) {
+            board[r] = [];
+            for (let c = 0; c < GRID_SIZE; c++) {
+                let gemType;
+                do {
+                    gemType = Math.floor(Math.random() * NUM_GEMS);
+                } while ((c >= 2 && board[r][c - 1].type === gemType && board[r][c - 2].type === gemType) ||
+                         (r >= 2 && board[r - 1][c].type === gemType && board[r - 2][c].type === gemType));
+                board[r][c] = { type: gemType, isBomb: false, isLaser: false, scale: 1, x: offsetX + c * GEM_SIZE, y: offsetY + r * GEM_SIZE };
+            }
+        }
+    }
+
+    function updateUI() {
+        if (!document.getElementById('match3Level')) return;
+        document.getElementById('match3Level').innerText = `Уровень: ${currentLevel + 1}`;
+        document.getElementById('match3Score').innerText = `Счет: ${score}/${match3Levels[currentLevel].score}`;
+        document.getElementById('match3Moves').innerText = movesLeft !== undefined ? `Ходы: ${movesLeft}` : '';
+        document.getElementById('match3Time').innerText = timeLeft !== undefined ? `Время: ${timeLeft}` : '';
+    }
+
+    function drawBoard() {
+        drawCanvasBackground(ctx, canvas);
+        for (let r = 0; r < GRID_SIZE; r++) {
+            for (let c = 0; c < GRID_SIZE; c++) {
+                const gem = board[r][c];
+                if (gem && gem.type > -1) {
+                    const size = GEM_SIZE * gem.scale;
+                    const sprite = customSprites[`match3_gem${gem.type}`];
+                    if (sprite) {
+                        ctx.drawImage(sprite, gem.x + (GEM_SIZE - size) / 2, gem.y + (GEM_SIZE - size) / 2, size, size);
+                    } else {
+                        ctx.fillStyle = GEM_COLORS[gem.type];
+                        ctx.fillRect(gem.x + 5, gem.y + 5, GEM_SIZE - 10, GEM_SIZE - 10);
+                    }
+                    if (gem.isBomb) { ctx.strokeStyle = "white"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(gem.x + GEM_SIZE / 2, gem.y + GEM_SIZE / 2, size / 2 - 5, 0, 2 * Math.PI); ctx.stroke(); }
+                    if (gem.isLaser) { ctx.fillStyle = "white"; ctx.fillRect(gem.x + 10, gem.y + GEM_SIZE / 2 - 3, size - 20, 6); ctx.fillRect(gem.x + GEM_SIZE / 2 - 3, gem.y + 10, 6, size - 20); }
+                }
+            }
+        }
+        if (selectedGem) {
+            ctx.strokeStyle = "#facc15"; ctx.lineWidth = 4;
+            ctx.strokeRect(offsetX + selectedGem.c * GEM_SIZE, offsetY + selectedGem.r * GEM_SIZE, GEM_SIZE, GEM_SIZE);
+        }
+    }
+
+    async function handleSwap(gem1Pos, gem2Pos) {
+        if (isProcessing) return;
+        isProcessing = true;
+
+        const gem1 = board[gem1Pos.r][gem1Pos.c];
+        const gem2 = board[gem2Pos.r][gem2Pos.c];
+        
+        // --- НОВИНКА: Проверка на комбинацию бонусов ---
+        if ((gem1.isBomb || gem1.isLaser) && (gem2.isBomb || gem2.isLaser)) {
+            if (movesLeft !== undefined) { movesLeft--; updateUI(); }
+            // Пример: Бомба + Бомба = большой взрыв
+            if (gem1.isBomb && gem2.isBomb) {
+                const affected = [];
+                // Увеличим радиус взрыва для комбинации
+                const BLAST_RADIUS = 2; 
+                for (let r = Math.max(0, gem1Pos.r - BLAST_RADIUS); r <= Math.min(GRID_SIZE - 1, gem1Pos.r + BLAST_RADIUS); r++) {
+                    for (let c = Math.max(0, gem1Pos.c - BLAST_RADIUS); c <= Math.min(GRID_SIZE - 1, gem1Pos.c + BLAST_RADIUS); c++) {
+                        affected.push(board[r][c]);
+                    }
+                }
+                score += affected.length * 15;
+                await Promise.all(affected.map(gem => animate(gem, { scale: 0 }, 300)));
+                affected.forEach(gem => gem.type = -1);
+                await dropAndRefill();
+            }
+            // Здесь можно добавить другие комбинации (лазер+лазер, бомба+лазер)
+            await processMatches(findMatches());
+            isProcessing = false;
+            return;
+        }
+        // --- КОНЕЦ НОВИНКИ ---
+
+        // Восстановленная логика обмена
+        await Promise.all([
+            animate(gem1, { x: gem2.x, y: gem2.y }, 200),
+            animate(gem2, { x: gem1.x, y: gem1.y }, 200)
+        ]);
+        
+        [board[gem1Pos.r][gem1Pos.c], board[gem2Pos.r][gem2Pos.c]] = [gem2, gem1];
+        
+        const matches = findMatches();
+        if (matches.length === 0) {
+            await new Promise(res => setTimeout(res, 200));
+            await Promise.all([
+                animate(gem1, { x: gem1.x, y: gem1.y }, 200),
+                animate(gem2, { x: gem2.x, y: gem2.y }, 200)
+            ]);
+            [board[gem1Pos.r][gem1Pos.c], board[gem2Pos.r][gem2Pos.c]] = [gem1, gem2];
+            isProcessing = false; return;
+        }
+
+        if (movesLeft !== undefined) { movesLeft--; updateUI(); }
+        await processMatches(matches);
+        isProcessing = false;
+    }
+    
+    // Эта функция теперь на правильном месте
+    async function processMatches(matches, comboMultiplier = 1) {
+        let specialGemsToActivate = [];
+        matches.forEach(match => { match.forEach(pos => { const gem = board[pos.r][pos.c]; if (gem && (gem.isBomb || gem.isLaser)) specialGemsToActivate.push(pos); }); });
+        
+        for (const pos of specialGemsToActivate) { const gem = board[pos.r][pos.c]; if(!gem || gem.type === -1) continue; if (gem.isBomb) await activateBomb(pos.r, pos.c); if (gem.isLaser) await activateLaser(pos.r, pos.c); }
+
+        let flatMatches = new Set(matches.flat().map(p => `${p.r},${p.c}`));
+        let powerUpCreated = false;
+        for (const match of matches) {
+            score += match.length * 10 * comboMultiplier;
+            if (match.length >= 4 && !powerUpCreated) {
+                const pos = match[Math.floor(Math.random() * match.length)];
+                const gem = board[pos.r][pos.c];
+                if (gem) {
+                     gem.isBomb = match.length === 4;
+                     gem.isLaser = match.length >= 5;
+                     if(gem.isBomb) unlockAchievement('match3_bomb');
+                     if(gem.isLaser) unlockAchievement('match3_laser');
+                     flatMatches.delete(`${pos.r},${pos.c}`);
+                     powerUpCreated = true;
+                }
+            }
+        }
+        
+        const animPromises = [];
+        for(const posStr of flatMatches) { const [r, c] = posStr.split(',').map(Number); if(board[r][c]) animPromises.push(animate(board[r][c], { scale: 0 }, 200)); }
+        await Promise.all(animPromises);
+        
+        for(const posStr of flatMatches) { const [r, c] = posStr.split(',').map(Number); if(board[r][c]) board[r][c].type = -1; }
+        
+        await dropAndRefill();
+        
+        const newMatches = findMatches();
+        if (newMatches.length > 0) {
+             if (comboMultiplier >= 2) showNotification(`Комбо x${comboMultiplier}!`);
+             await processMatches(newMatches, comboMultiplier + 1);
+        } else {
+            updateUI(); // Обновляем UI после всех комбо
+            if (score >= match3Levels[currentLevel].score) {
+                endGame(true);
+            } else if ((movesLeft !== undefined && movesLeft <= 0) || (timeLeft !== undefined && timeLeft <= 0)) {
+                endGame(false);
+            }
+        }
+    }
+    
+    // Эта функция тоже теперь на правильном месте
+    function findMatches() {
+        const matches = [];
+        const toRemove = new Set();
+
+        function posToKey(r, c) { return `${r},${c}`; }
+
+        // Горизонтальные
+        for (let r = 0; r < GRID_SIZE; r++) {
+            for (let c = 0; c < GRID_SIZE - 2; c++) {
+                const gem = board[r][c];
+                if (gem.type > -1 && gem.type === board[r][c + 1].type && gem.type === board[r][c + 2].type) {
+                    let match = [{r,c}, {r,c:c+1}, {r,c:c+2}];
+                    let i = c + 3;
+                    while (i < GRID_SIZE && board[r][i].type === gem.type) {
+                        match.push({r, c: i}); i++;
+                    }
+                    if(!toRemove.has(posToKey(r,c))) {
+                         matches.push(match);
+                         match.forEach(p => toRemove.add(posToKey(p.r, p.c)));
+                    }
+                    c = i - 1;
+                }
+            }
+        }
+        // Вертикальные
+        for (let c = 0; c < GRID_SIZE; c++) {
+            for (let r = 0; r < GRID_SIZE - 2; r++) {
+                const gem = board[r][c];
+                if (gem.type > -1 && gem.type === board[r+1][c].type && gem.type === board[r+2][c].type) {
+                    let match = [{r,c}, {r:r+1,c}, {r:r+2,c}];
+                    let i = r + 3;
+                    while (i < GRID_SIZE && board[i][c].type === gem.type) {
+                        match.push({r: i, c}); i++;
+                    }
+                    if(!toRemove.has(posToKey(r,c))) {
+                         matches.push(match);
+                         match.forEach(p => toRemove.add(posToKey(p.r, p.c)));
+                    }
+                    r = i - 1;
+                }
+            }
+        }
+        return matches;
+    }
+
+    async function dropAndRefill() {
+        const dropPromises = [];
+        for (let c = 0; c < GRID_SIZE; c++) {
+            let emptyRow = GRID_SIZE - 1;
+            for (let r = GRID_SIZE - 1; r >= 0; r--) {
+                if (board[r][c].type > -1) {
+                    if (emptyRow !== r) {
+                        const fallingGem = board[r][c];
+                        board[emptyRow][c] = fallingGem;
+                        board[r][c] = { type: -1 };
+                        dropPromises.push(animate(fallingGem, { y: offsetY + emptyRow * GEM_SIZE }, 300));
+                    }
+                    emptyRow--;
+                }
+            }
+        }
+        await Promise.all(dropPromises);
+
+        const refillPromises = [];
+        for (let r = 0; r < GRID_SIZE; r++) {
+            for (let c = 0; c < GRID_SIZE; c++) {
+                if (board[r][c].type === -1) {
+                    board[r][c] = { type: Math.floor(Math.random() * NUM_GEMS), isBomb: false, isLaser: false, scale: 1, x: offsetX + c * GEM_SIZE, y: offsetY - (GRID_SIZE - r) * GEM_SIZE };
+                    refillPromises.push(animate(board[r][c], { y: offsetY + r * GEM_SIZE }, 300));
+                }
+            }
+        }
+        await Promise.all(refillPromises);
+    }
+    
+    async function activateBomb(r,c){board[r][c].type=-1;let affectedGems=[];for(let i=Math.max(0,r-BOMB_RADIUS);i<=Math.min(GRID_SIZE-1,r+BOMB_RADIUS);i++){for(let j=Math.max(0,c-BOMB_RADIUS);j<=Math.min(GRID_SIZE-1,c+BOMB_RADIUS);j++){if(board[i][j].type>-1)affectedGems.push(board[i][j])}}score+=affectedGems.length*10;await Promise.all(affectedGems.map(gem=>animate(gem,{scale:0},200)));affectedGems.forEach(gem=>gem.type=-1);await dropAndRefill()}
+    async function activateLaser(r,c){board[r][c].type=-1;let affectedGems=[];for(let i=0;i<GRID_SIZE;i++){if(board[r][i].type>-1)affectedGems.push(board[r][i]);if(board[i][c].type>-1&&i!==r)affectedGems.push(board[i][c])}score+=affectedGems.length*10;await Promise.all(affectedGems.map(gem=>animate(gem,{scale:0},200)));affectedGems.forEach(gem=>gem.type=-1);await dropAndRefill()}
+    
+    function endGame(isWin) {
+        if(isProcessing) return; isProcessing = true;
+        clearInterval(levelTimer);
+        stopGameTimer();
+        if(isWin){
+            updateGlobalStats('wins', 1); if (currentLevel + 1 >= 5) unlockAchievement('match3_level_5');
+            currentLevel++;
+            if (currentLevel >= match3Levels.length) {
+                showNotification("Вы прошли все уровни!"); gameAnimationId = null;
+            } else {
+                showNotification(`Уровень ${currentLevel} пройден!`);
+                setTimeout(() => { initLevel(currentLevel); isProcessing = false; }, 2000);
+            }
+        } else {
+            updateGlobalStats('losses', 1);
+            showNotification("Вы проиграли! Начинаем заново.");
+            setTimeout(() => { initLevel(currentLevel); isProcessing = false; }, 2000);
+        }
+    }
+
+    function gameLoop(){
+        if(gameAnimationId === null) return;
+        drawBoard(); updateUI();
+        if(document.fullscreenElement){
+            ctx.fillStyle="white";ctx.font="20px Inter";
+            ctx.textAlign="left";ctx.fillText(`Уровень: ${currentLevel+1}`,15,30);
+            ctx.textAlign="center";ctx.fillText(`Счет: ${score}`,canvas.width/2,30);
+            let uiLine2 = '';
+            if(movesLeft !== undefined) uiLine2 += `Ходы: ${movesLeft}  `;
+            if(timeLeft !== undefined) uiLine2 += `Время: ${timeLeft}`;
+            ctx.fillText(uiLine2,canvas.width/2,55);
+        }
+        drawNotification(ctx,canvas);
+        requestAnimationFrame(gameLoop);
+    }
+    
+    initLevel(currentLevel);
+    gameAnimationId = requestAnimationFrame(gameLoop);
+    
+    canvas.addEventListener('click', async(event) => {
+        if (isProcessing) return;
+        const rect = canvas.getBoundingClientRect();
+        const c = Math.floor((event.clientX - rect.left - offsetX) / GEM_SIZE);
+        const r = Math.floor((event.clientY - rect.top - offsetY) / GEM_SIZE);
+        if (r < 0 || r >= GRID_SIZE || c < 0 || c >= GRID_SIZE) return;
+
+        const clickedGem = board[r][c];
+        if (clickedGem.isBomb || clickedGem.isLaser) {
+            if (movesLeft !== undefined) movesLeft--;
+            isProcessing = true;
+            if(clickedGem.isBomb) await activateBomb(r, c);
+            if(clickedGem.isLaser) await activateLaser(r, c);
+            await processMatches(findMatches());
+            isProcessing = false;
+            return;
+        }
+
+        if (!selectedGem) {
+            selectedGem = { r, c };
+        } else {
+            const dist = Math.abs(selectedGem.r - r) + Math.abs(selectedGem.c - c);
+            if (dist === 1) {
+                await handleSwap(selectedGem, { r, c });
+            }
+            selectedGem = null;
+        }
+    });
+}
+// ==================== Инициализация ====================
+window.addEventListener('DOMContentLoaded', () => {
+    loadAssets();
+    setMode('manual');
+});
+</script>
+
+</body>
+</html>
